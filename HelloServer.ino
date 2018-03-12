@@ -1,9 +1,14 @@
 #include <ArduinoJson.h>
-#include <ESP8266WiFi.h>
-#include <WiFiClient.h>
+#include <DallasTemperature.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
+#include <OneWire.h>
 #include <PubSubClient.h>
+#include <WiFiClient.h>
+
+// This configures OneWire lib for esp8266
+#define ARDUINO_ARCH_ESP8266
 
 #define WIFI_SSID "Misadventure"
 #define WIFI_PASSWORD "maleficent"
@@ -19,15 +24,18 @@
 #define MQTT_WILL_RETAIN true
 
 // These pin numbers align to GPIO pin numbering, not ESP-12 numbering
-#define RELAY 15     // ESP-12: D8
-#define LED 2        // ESP-12: D4
-#define REDBUTTON 14 // ESP-12: D5
-#define REDLED 12    // ESP-12: D6
+#define LED 2         // ESP-12: D4, onboard LED
+#define REDBUTTON 14  // ESP-12: D5
+#define REDLED 12     // ESP-12: D6
+#define RELAY 15      // ESP-12: D8
+#define ONEWIRE_BUS 5 // ESP-12: D1
 
 struct State {
+  bool redbutton;
   bool redled;
   bool relay;
-  bool redbutton;
+  float ftemp;
+  char tempC[6];
 };
 
 #define JSON_STATE_SIZE (JSON_OBJECT_SIZE(3))
@@ -38,8 +46,15 @@ void serialize_state(const State& state, char* json_out, size_t MAXSIZE) {
   root["redled"] = state.redled;
   root["relay"] = state.relay;
   root["redbutton"] = state.redbutton;
+  root["tempC"] = state.tempC;
   root.printTo(json_out, MAXSIZE);
 }
+
+// Set up OneWire bus
+OneWire oneWire(ONEWIRE_BUS);
+
+// Intialize DS18B20 temp sensor(s)
+DallasTemperature sensors(&oneWire);
 
 ESP8266WebServer server(80);
 
@@ -54,18 +69,20 @@ State state;
 int value = 0;
 int retries_left = 5;
 bool redbutton_triggered = false;
+long last_millis;
+float last_published_ftemp = 0;
 
-void handleNotFound(){
+void handleNotFound() {
   digitalWrite(LED, 0);
   String message = "File Not Found\n\n";
   message += "URI: ";
   message += server.uri();
   message += "\nMethod: ";
-  message += (server.method() == HTTP_GET)?"GET":"POST";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
   message += "\nArguments: ";
   message += server.args();
   message += "\n";
-  for (uint8_t i=0; i<server.args(); i++){
+  for (uint8_t i = 0; i < server.args(); i++) {
     message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
   }
   server.send(404, "text/plain", message);
@@ -84,6 +101,18 @@ void handle_root() {
   digitalWrite(LED, 1);
 }
 
+void setup_temperatures() {
+  sensors.begin();
+}
+
+void update_temp(char *tempC) {
+  // just one sensor for now
+  sensors.requestTemperatures();
+  state.ftemp = sensors.getTempCByIndex(0);
+
+  dtostrf(state.ftemp, /*width*/ 5, /*prec*/ 2, tempC);
+}
+
 void setup_http() {
   server.on("/", handle_root);
   server.onNotFound(handleNotFound);
@@ -98,27 +127,27 @@ void setup_http() {
 String get_wifi_status() {
   switch (WiFi.status()) {
     case WL_IDLE_STATUS:
-    return String("Wifi is changing modes.");
-    break;
+      return String("Wifi is changing modes.");
+      break;
 
     case WL_NO_SSID_AVAIL:
-    return String("SSID: '") + WIFI_SSID + " is not available.";
-    break;
+      return String("SSID: '") + WIFI_SSID + " is not available.";
+      break;
 
     case WL_CONNECTED:
-    return String("Connected to ") + WIFI_SSID;
-    break;
+      return String("Connected to ") + WIFI_SSID;
+      break;
 
     case WL_CONNECT_FAILED:
-    return String("Could not connect to ") + WIFI_SSID;
-    break;
+      return String("Could not connect to ") + WIFI_SSID;
+      break;
 
     case WL_DISCONNECTED:
-    return String("Wifi not in station mode.");
-    break;
+      return String("Wifi not in station mode.");
+      break;
 
     default:
-    return String("Wifi status error");
+      return String("Wifi status error");
   }
 }
 
@@ -189,8 +218,8 @@ void handle_relay(char* msg, unsigned int length) {
   }
 }
 
-void ByteToChar(byte* bytes, char* chars, unsigned int count){
-  for(unsigned int i = 0; i < count; i++)
+void ByteToChar(byte* bytes, char* chars, unsigned int count) {
+  for (unsigned int i = 0; i < count; i++)
     chars[i] = (char)bytes[i];
   chars[count] = (char)0;
 }
@@ -204,7 +233,7 @@ void reconnect_mqtt() {
           MQTT_WILL_QOS,
           MQTT_WILL_RETAIN,
           MQTT_WILL_PAYLOAD
-          )) {
+        )) {
       Serial.println("MQTT Connected.");
       client.publish("hovis/esp8266/status", "online", 1);
       client.subscribe("hovis/#");
@@ -227,6 +256,7 @@ void setup(void) {
   state.redled = false;
   state.relay = false;
   state.redbutton = false;
+  last_millis = 0;
 
   pinMode(LED, OUTPUT);
   pinMode(REDLED, OUTPUT);
@@ -239,14 +269,33 @@ void setup(void) {
   setup_network();
   setup_http();
   setup_mqtt();
+  setup_temperatures();
 }
 
-void loop(void){
-  if (!client.connected()) { reconnect_mqtt(); }
+void subloop() {
+  update_temp(state.tempC);
+  if (fabs(last_published_ftemp - state.ftemp) > 0.1) {
+    client.publish("hovis/esp8266/temp", state.tempC);
+    last_published_ftemp = state.ftemp;
+  }
+}
+
+void loop(void) {
+  if (!client.connected()) {
+    reconnect_mqtt();
+  }
   client.loop();
   server.handleClient();
 
+  if (millis() - last_millis > 250) {
+    last_millis = millis();
+    subloop();
+  }
+
   if (redbutton_triggered) {
+    Serial.print("REDBUTTON isr triggered.");
+    Serial.print(" REDBUTTON state is ");
+    Serial.println(state.redbutton ? "pressed" : "unpressed");
     redbutton_triggered = false;
     client.publish("hovis/esp8266/redbutton", (state.redbutton ? "pressed" : "unpressed"));
   }
