@@ -1,4 +1,3 @@
-#include <ArduinoJson.h>
 #include <DallasTemperature.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
@@ -23,6 +22,10 @@
 #define MQTT_WILL_QOS 1
 #define MQTT_WILL_RETAIN true
 
+
+// Number of attached DS18B20 sensors
+#define NUM_TEMPS 2
+
 // These pin numbers align to GPIO pin numbering, not ESP-12 numbering
 #define LED 2         // ESP-12: D4, onboard LED
 #define REDBUTTON 14  // ESP-12: D5
@@ -30,25 +33,14 @@
 #define RELAY 15      // ESP-12: D8
 #define ONEWIRE_BUS 5 // ESP-12: D1
 
+
 struct State {
   bool redbutton;
   bool redled;
   bool relay;
-  float ftemp;
-  char tempC[6];
+  float ftemp[NUM_TEMPS];
+  char tempC[NUM_TEMPS][6];
 };
-
-#define JSON_STATE_SIZE (JSON_OBJECT_SIZE(3))
-
-void serialize_state(const State& state, char* json_out, size_t MAXSIZE) {
-  StaticJsonBuffer<JSON_STATE_SIZE> buffer;
-  JsonObject& root = buffer.createObject();
-  root["redled"] = state.redled;
-  root["relay"] = state.relay;
-  root["redbutton"] = state.redbutton;
-  root["tempC"] = state.tempC;
-  root.printTo(json_out, MAXSIZE);
-}
 
 // Set up OneWire bus
 OneWire oneWire(ONEWIRE_BUS);
@@ -70,7 +62,7 @@ int value = 0;
 int retries_left = 5;
 bool redbutton_triggered = false;
 long last_millis;
-float last_published_ftemp = 0;
+float last_published_ftemp[NUM_TEMPS] = {0};
 
 void handleNotFound() {
   digitalWrite(LED, 0);
@@ -92,11 +84,7 @@ void handleNotFound() {
 
 void handle_root() {
   digitalWrite(LED, 0);
-  const int json_size = 200;
-  char json_out[json_size];
-  serialize_state(state, json_out, json_size);
-
-  server.send(200, "text/plain", json_out);
+  server.send(200, "text/plain", "hi there");
   delay(10); // to see the LED
   digitalWrite(LED, 1);
 }
@@ -105,12 +93,13 @@ void setup_temperatures() {
   sensors.begin();
 }
 
-void update_temp(char *tempC) {
+void update_temps() {
   // just one sensor for now
   sensors.requestTemperatures();
-  state.ftemp = sensors.getTempCByIndex(0);
-
-  dtostrf(state.ftemp, /*width*/ 5, /*prec*/ 2, tempC);
+  for (int i=0; i<NUM_TEMPS; i++) {
+    state.ftemp[i] = sensors.getTempCByIndex(i);
+    dtostrf(state.ftemp[i],  /*width*/ 5, /*prec*/ 2, state.tempC[i]);
+  }
 }
 
 void setup_http() {
@@ -253,6 +242,27 @@ void redbutton_isr() {
 }
 
 void setup(void) {
+  char target[20] = '\0';
+  char* foo = "foo";
+  char* bar = "bar";
+  Serial.print("1 ");
+  Serial.println(target);
+
+  Serial.print("2 ");
+  Serial.println(target);
+
+  Serial.print("3 ");
+  Serial.println(target);
+
+  delay(10000);
+
+
+
+
+
+
+
+
   state.redled = false;
   state.relay = false;
   state.redbutton = false;
@@ -273,10 +283,26 @@ void setup(void) {
 }
 
 void subloop() {
-  update_temp(state.tempC);
-  if (fabs(last_published_ftemp - state.ftemp) > 0.1) {
-    client.publish("hovis/esp8266/temp", state.tempC);
-    last_published_ftemp = state.ftemp;
+  update_temps();
+  for (int i=0; i<NUM_TEMPS; i++) {
+    char* buffer = "";
+    char* topic = "";
+    if (fabs(last_published_ftemp[i] - state.ftemp[i]) > 0.1) {
+      topic[0] = (char)0;
+      Serial.print("before ");
+      Serial.print(topic);
+      Serial.print("---");
+      Serial.println(buffer);
+      itoa(i, buffer, 10);
+      strncat(buffer, topic, 2);
+      strncat("hovis/esp8266/temp", topic, 20);
+      Serial.print("after ");
+      Serial.print(topic);
+      Serial.print("---");
+      Serial.println(buffer);
+      client.publish(topic, state.tempC[i]);
+      last_published_ftemp[i] = state.ftemp[i];
+    }
   }
 }
 
