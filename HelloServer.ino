@@ -102,6 +102,23 @@ void update_temps() {
   }
 }
 
+void report_temps() {
+  for (int i=0; i<NUM_TEMPS; i++) {
+    char sindex[6];
+    char topic[6];
+    if (fabs(last_published_ftemp[i] - state.ftemp[i]) > 0.1) {
+      topic[0] = '\0';
+      itoa(i, sindex, 10);
+
+      strncat(topic, "hovis/esp8266/temp", 20);
+      strncat(topic, sindex, 6);
+
+      client.publish(topic, state.tempC[i]);
+      last_published_ftemp[i] = state.ftemp[i];
+    }
+  }
+}
+
 void setup_http() {
   server.on("/", handle_root);
   server.onNotFound(handleNotFound);
@@ -223,6 +240,7 @@ void reconnect_mqtt() {
           MQTT_WILL_RETAIN,
           MQTT_WILL_PAYLOAD
         )) {
+      retries_left = 5;
       Serial.println("MQTT Connected.");
       client.publish("hovis/esp8266/status", "online", 1);
       client.subscribe("hovis/#");
@@ -242,19 +260,22 @@ void redbutton_isr() {
 }
 
 void setup(void) {
-  char target[20] = '\0';
-  char* foo = "foo";
-  char* bar = "bar";
-  Serial.print("1 ");
-  Serial.println(target);
-
-  Serial.print("2 ");
-  Serial.println(target);
-
-  Serial.print("3 ");
-  Serial.println(target);
-
-  delay(10000);
+  Serial.begin(115200);
+  delay(500);
+  char* bufferA = "";
+  char* bufferB = "test";
+  char* bufferC = {};
+  Serial.println("\n\nstart");
+  Serial.println(bufferA);
+  Serial.println(bufferB);
+  Serial.println(bufferC);
+  Serial.println();
+  strncat(bufferA, bufferB, 3);
+  Serial.println("\n\nsecond");
+  Serial.println(bufferA);
+  Serial.println(bufferB);
+  Serial.println(bufferC);
+  Serial.println();
 
 
 
@@ -274,7 +295,6 @@ void setup(void) {
   digitalWrite(REDLED, LOW);
   digitalWrite(RELAY, LOW);
   attachInterrupt(digitalPinToInterrupt(REDBUTTON), redbutton_isr, CHANGE);
-  Serial.begin(115200);
 
   setup_network();
   setup_http();
@@ -282,31 +302,8 @@ void setup(void) {
   setup_temperatures();
 }
 
-void subloop() {
-  update_temps();
-  for (int i=0; i<NUM_TEMPS; i++) {
-    char* buffer = "";
-    char* topic = "";
-    if (fabs(last_published_ftemp[i] - state.ftemp[i]) > 0.1) {
-      topic[0] = (char)0;
-      Serial.print("before ");
-      Serial.print(topic);
-      Serial.print("---");
-      Serial.println(buffer);
-      itoa(i, buffer, 10);
-      strncat(buffer, topic, 2);
-      strncat("hovis/esp8266/temp", topic, 20);
-      Serial.print("after ");
-      Serial.print(topic);
-      Serial.print("---");
-      Serial.println(buffer);
-      client.publish(topic, state.tempC[i]);
-      last_published_ftemp[i] = state.ftemp[i];
-    }
-  }
-}
-
 void loop(void) {
+
   if (!client.connected()) {
     reconnect_mqtt();
   }
@@ -315,7 +312,8 @@ void loop(void) {
 
   if (millis() - last_millis > 250) {
     last_millis = millis();
-    subloop();
+    update_temps();
+    report_temps();
   }
 
   if (redbutton_triggered) {
